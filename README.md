@@ -72,11 +72,14 @@ Opens at `http://localhost:5173`. The backend's CORS config allows requests from
 
 **Confirmed order (P100, quantity 1):**
 
-*(insert screenshot here)*
+![Confirmed order](./screenshots/confirmed-order.png)
 
 **Rejected order — insufficient stock (P300, quantity 1):**
 
-*(insert screenshot here)*
+![Rejected order](./screenshots/rejected-order.png)
+
+**Supabase Orders**
+![Supabase](./screenshots/supabase.png)
 
 ## Reflection
 
