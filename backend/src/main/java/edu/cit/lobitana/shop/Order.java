@@ -1,9 +1,13 @@
 package edu.cit.lobitana.shop;
 
 import jakarta.persistence.*;
-import java.time.LocalDateTime;
 
-@Entity
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+
+// Entity name "ShopOrder" avoids clashing with the ORDER keyword in generated queries.
+@Entity(name = "ShopOrder")
 @Table(name = "orders")
 public class Order {
 
@@ -11,12 +15,6 @@ public class Order {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "order_id")
     private Long orderId;
-
-    @Column(name = "product_id", nullable = false)
-    private String productId;
-
-    @Column(name = "quantity", nullable = false)
-    private int quantity;
 
     @Column(name = "status", nullable = false)
     private String status;
@@ -27,19 +25,25 @@ public class Order {
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
+    @OrderBy("orderItemId ASC")
+    private List<OrderItem> items = new ArrayList<>();
+
     @PrePersist
     protected void onCreate() {
         this.createdAt = LocalDateTime.now();
     }
 
+    public void addItem(String productId, int quantity) {
+        OrderItem item = new OrderItem();
+        item.setOrder(this);
+        item.setProductId(productId);
+        item.setQuantity(quantity);
+        items.add(item);
+    }
+
     public Long getOrderId() { return orderId; }
     public void setOrderId(Long orderId) { this.orderId = orderId; }
-
-    public String getProductId() { return productId; }
-    public void setProductId(String productId) { this.productId = productId; }
-
-    public int getQuantity() { return quantity; }
-    public void setQuantity(int quantity) { this.quantity = quantity; }
 
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
@@ -49,4 +53,6 @@ public class Order {
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+
+    public List<OrderItem> getItems() { return items; }
 }

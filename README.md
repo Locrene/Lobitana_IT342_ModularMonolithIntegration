@@ -1,56 +1,88 @@
-# Modular Monolith Integration — Order & Inventory
+# Modular Monolith Integration — Order, Inventory & Notification
 
-A single Spring Boot application with two in-process modules — **Order** and **Inventory** — sharing a Supabase (Postgres) database, connected to a React frontend over REST.
+A single Spring Boot application with three in-process modules — **Order**, **Inventory** and **Notification** — sharing a Supabase (Postgres) database, connected to a React frontend over REST.
+
+Lab 2 extends the Lab 1 monolith with multi-item orders (all-or-nothing), order cancellation with restock, read endpoints for a live dashboard, in-monolith domain events, and a low-stock alert rule.
 
 ## Architecture
 
 ```
 edu.cit.lobitana/
-  ModularmonolithApplication.java   (parent package — scans both modules)
+  ModularmonolithApplication.java   (parent package — scans all modules)
+  config/
+    CorsConfig.java
   inventory/
     Inventory.java                  (entity)
     InventoryRepository.java        (JPA repository)
-    InventoryService.java           (public interface — the only thing shop can depend on)
-    InventoryServiceImpl.java       (package-private implementation)
+    InventoryService.java           (public interface: getAll, getItem, reserve, restock, isLowStock)
+    InventoryServiceImpl.java       (package-private implementation, publishes LowStockEvent)
+    InventoryController.java        (GET /api/inventory)
+    InventoryView.java              (API response record)
+    events/LowStockEvent.java
   shop/
-    Order.java                      (entity)
-    OrderRepository.java            (JPA repository)
-    OrderService.java               (depends only on InventoryService, via constructor injection)
-    OrderController.java            (REST endpoint)
-  config/
-    CorsConfig.java
+    Order.java                      (entity, one-to-many line items)
+    OrderItem.java                  (entity for order_items)
+    OrderRepository.java
+    OrderService.java               (validates all items, reserves, cancels, publishes order events)
+    OrderController.java            (POST /api/orders, GET /api/orders, POST /api/orders/{id}/cancel)
+    OrderDtos.java                  (request/response records)
+    events/OrderPlacedEvent.java
+    events/OrderRejectedEvent.java
+  notification/
+    Notification.java               (entity)
+    NotificationRepository.java
+    NotificationListener.java       (@EventListener for all three events)
+    NotificationController.java     (GET /api/notifications)
 ```
 
-`shop` and `inventory` integrate **in-process** — no HTTP calls between them. `OrderService` is constructor-injected with the `InventoryService` interface only; it can never see or instantiate `InventoryServiceImpl` directly, since that class is package-private to `inventory`.
+**Module boundaries**
+
+- `shop` depends only on the public `InventoryService` interface (constructor injection). `InventoryServiceImpl` stays package-private.
+- `notification` imports **only the event records** from `shop.events` and `inventory.events`. It never calls `OrderService` or `InventoryService`.
+- Neither `shop` nor `inventory` imports anything from `notification`. They publish events through Spring's `ApplicationEventPublisher` and do not know who listens.
 
 ## Tech Stack
 
-- Backend: Spring Boot (Java 17, Maven)
+- Backend: Spring Boot 4 (Java 17, Maven, Spring Data JPA)
 - Frontend: React + Vite
 - Database: Supabase (Postgres)
 
 ## Supabase Setup
 
 1. Create a free account and project at [supabase.com](https://supabase.com).
-2. In **Project Settings → Database**, note your connection details, or use **Connect → Session pooler** (recommended over Direct connection, since Direct uses IPv6 by default and most networks are IPv4-only).
-3. Open the **SQL Editor**, paste the contents of [`sql/schema.sql`](./sql/schema.sql), and run it (choose **"Run without RLS"** when prompted — this app connects directly via a privileged database credential, not Supabase's public client API, so Row Level Security isn't applicable here).
-4. Confirm in **Table Editor** that `inventory` has 3 seeded rows and `orders` is empty.
+2. Open **Connect → Session pooler** to get your host and username. The session pooler is recommended over Direct connection, which uses IPv6 by default.
+3. Open the **SQL Editor**, paste the contents of [`sql/schema.sql`](./sql/schema.sql), and run it. Choose **"Run without RLS"** when prompted: the app connects with a privileged database credential, not Supabase's public client API. The script drops and recreates every table, so it can be re-run to reset the data.
+4. Confirm in **Table Editor** that there are four tables: `inventory` with 3 seeded rows (P100 Wireless Mouse 25, P200 Mechanical Keyboard 10, P300 USB-C Hub 0), plus empty `orders`, `order_items` and `notifications`.
+
+![Supabase Notifications](./screenshots/supabase-notification.png)
+![Supabase Orders](./screenshots/supabase-orders.png)
+## Database Schema
+
+| Table | Columns |
+|---|---|
+| `inventory` | `product_id`, `name`, `stock` |
+| `orders` | `order_id`, `status` (`CONFIRMED` / `REJECTED` / `CANCELLED`), `reason`, `created_at` |
+| `order_items` | `order_item_id`, `order_id`, `product_id`, `quantity` |
+| `notifications` | `notification_id`, `type` (`ORDER_CONFIRMED` / `ORDER_REJECTED` / `LOW_STOCK`), `message`, `created_at` |
 
 ## Backend Setup
 
-1. Set your Supabase database password as an environment variable named `SUPABASE_DB_PASSWORD` (in IntelliJ: Run/Debug Configurations → Environment variables). **Never commit this value to Git.**
-2. Update `src/main/resources/application.properties` with your own Supabase host/username if different from the example below:
+1. Set your Supabase database password as the environment variable `SUPABASE_DB_PASSWORD`. **Never commit this value to Git.**
+   - IntelliJ: Run/Debug Configurations → Environment variables
+   - PowerShell: `$env:SUPABASE_DB_PASSWORD='your-password'`
+2. Update `src/main/resources/application.properties` with your own Supabase host and username:
    ```properties
    spring.datasource.url=jdbc:postgresql://<your-pooler-host>:5432/postgres
    spring.datasource.username=<your-pooler-username>
    spring.datasource.password=${SUPABASE_DB_PASSWORD}
+   inventory.low-stock-threshold=5
    ```
 3. Run the app:
    ```
    cd backend
-   mvn spring-boot:run
+   .\mvnw spring-boot:run
    ```
-4. API available at `http://localhost:8080`.
+4. The API is available at `http://localhost:8080`.
 
 ## Frontend Setup
 
@@ -60,43 +92,66 @@ npm install
 npm run dev
 ```
 
-Opens at `http://localhost:5173`. The backend's CORS config allows requests from this origin.
+Opens at `http://localhost:5173`, which the backend's CORS config allows. The page has a cart, an inventory table that highlights low-stock rows, an order history with Cancel buttons, and an activity feed. All panels refresh after every order and cancel.
 
 ## API
 
-| Method | Endpoint      | Request Body                          | Response                                                    |
-|--------|---------------|----------------------------------------|---------------------------------------------------------------|
-| POST   | `/api/orders` | `{ "productId": "P100", "quantity": 1 }` | `{ "status": "CONFIRMED"/"REJECTED", "reason": "...", "inventory": {...} }` |
+| Method | Endpoint | Request Body | Response |
+|---|---|---|---|
+| POST | `/api/orders` | `{ "items": [{ "productId": "P100", "quantity": 3 }, ...] }` | `{ orderId, status, reason, items: [{ productId, quantity, outcome }], inventory }` |
+| GET | `/api/orders` | — | Order history with status and line items |
+| POST | `/api/orders/{orderId}/cancel` | — | The cancelled order. `404` if not found, `409` if already `CANCELLED` or `REJECTED` |
+| GET | `/api/inventory` | — | `[{ productId, name, stock, lowStock }]` |
+| GET | `/api/notifications` | — | Notification log, newest first |
+
+Item outcomes are `RESERVED`, `INSUFFICIENT_STOCK`, or `NOT_RESERVED` (the item had enough stock, but another item in the same order failed).
+
+## How the New Features Work
+
+**Multi-item orders (all-or-nothing).** `OrderService.placeOrder()` runs in one `@Transactional` method. It first checks every line item against current stock without changing anything. If any item fails, the order is saved as `REJECTED`, `reserve()` is never called, and the response marks the failing item `INSUFFICIENT_STOCK` and the rest `NOT_RESERVED`. Only when every item passes does it call `reserve()` for each one. If a reserve still fails (for example, stock changed in between), the method throws and the whole transaction rolls back.
+
+**Cancellation and restock.** `POST /api/orders/{id}/cancel` calls `InventoryService.restock()` for every line item and sets the status to `CANCELLED`. Rejected orders return `409`, because they never reserved stock and restocking them would create stock that doesn't exist.
+
+**Domain events.** After confirming or rejecting an order, `OrderService` publishes `OrderPlacedEvent` or `OrderRejectedEvent`. After a successful `reserve()`, `InventoryServiceImpl` publishes `LowStockEvent` if remaining stock is below the threshold (5). `NotificationListener` handles all three with `@EventListener` and writes to the `notifications` table, logging low-stock alerts as a separate `LOW_STOCK` type.
+
+### Synchronous vs. @Async listeners
+
+None of the listeners are `@Async`. They run synchronously on the request thread, inside the order's transaction. This has two benefits for this lab: a notification is only saved if the order commits, and the activity feed is already up to date when the frontend refreshes right after the request. With `@Async`, the listener would run on another thread outside the transaction, so it could log an order that later rolled back, and a failure while saving the notification would go unnoticed. If asynchronous processing were needed later, I would combine `@Async` with `@TransactionalEventListener(phase = AFTER_COMMIT)` so notifications are only sent for committed orders.
 
 ## Network Tab Evidence
 
-**Confirmed order (P100, quantity 1):**
+### 1. Multi-item order — all items succeed (CONFIRMED)
 
-![Confirmed order](./screenshots/confirmed-order.png)
+Wireless Mouse × 3 and Mechanical Keyboard × 6. Both items are `RESERVED`, and the keyboard drops to 4, which triggers a low-stock alert.
 
-**Rejected order — insufficient stock (P300, quantity 1):**
+![Confirmed multi-item order](./screenshots/lab2-Confirmed.png)
 
-![Rejected order](./screenshots/rejected-order.png)
+### 2. Multi-item order — one item fails, whole order REJECTED
 
-**Supabase Orders**
-![Supabase](./screenshots/supabase.png)
+Wireless Mouse × 2 and USB-C Hub × 1. The hub has 0 stock, so the order is rejected. The mouse is `NOT_RESERVED` and its stock stays at 22, so nothing was partially reserved.
+
+![Rejected multi-item order](./screenshots/lab2-Rejected.png)
+
+### 3. Cancel with restock reflected in GET /api/inventory
+
+Cancelling the confirmed order returns both items to stock: Wireless Mouse back to 25 and Mechanical Keyboard back to 10.
+
+![Cancel and restock](./screenshots/lab2-cancel-restock.png)
+
+### 4. Notification feed — confirmed order, rejected order, and low-stock alert
+
+![Notification feed](./screenshots/lab2-notifications.png)
 
 ## Reflection
 
-### 1. In-process vs. separate microservices over a network
+### 1. Keeping multi-item orders atomic
 
-Integrating Order and Inventory in-process, as two packages inside one Spring Boot application, means calling `InventoryService.reserve(...)` is just a regular Java method call — synchronous, sharing the same JVM memory space, and wrapped in the same database transaction as the rest of the order-placement logic. We get several things "for free" this way: atomicity (if reserving stock succeeds but saving the order somehow failed, both could be rolled back together in a single transaction, since they share one connection to one database), zero network latency, no serialization/deserialization overhead, and no need to handle partial failures like timeouts, retries, or an inventory service being temporarily unreachable. Deployment is also simpler — one JAR, one process, one set of logs to check.
+Working on this project helped me understand the importance of transaction management in maintaining data consistency. Since Order and Inventory run within the same application and database, using a single @Transactional method allows all stock reservations to succeed or fail together. Validating every item before making reservations also helps prevent unnecessary database changes. However, if Inventory becomes a separate microservice, a shared database transaction would no longer be possible. I would need to implement a saga with compensating actions, such as restocking items when a reservation fails. Idempotency keys, timeouts, and an outbox pattern would also be necessary to handle retries and prevent inconsistent inventory.
 
-If Inventory were split into its own microservice reachable over HTTP, we would lose all of that for free and have to explicitly add it back: a network client (REST or gRPC) inside `shop` to call Inventory, timeout and retry policies for when the network is slow or the service is down, a strategy for partial failure (e.g., what happens if the reservation succeeds on Inventory's side but the network call to confirm that back to Order fails?), authentication/authorization between the two services, and likely some form of distributed transaction management or an eventual-consistency pattern (like the Saga pattern) since a single ACID transaction can no longer span two separate databases. We'd also need service discovery, independent versioning of each service's API contract, and separate monitoring/logging per service.
+### 2. Events instead of calling Notification directly
 
-### 2. Why package-private `InventoryServiceImpl` matters
+Another lesson I learned is the value of event-driven communication. Instead of directly calling Notification, OrderService can publish events without knowing which modules will consume them. This reduces coupling and makes the system easier to extend. However, I realized that in-process events are still synchronous and can participate in the same transaction. If Notification becomes a separate service, I would need a message broker such as RabbitMQ or Kafka, along with a transactional outbox to ensure that events are published reliably. Consumers must also handle duplicate messages safely.
 
-Making `InventoryServiceImpl` package-private (no `public` modifier) is what actually enforces the module boundary at compile time, not just by convention or documentation. Because it's package-private, no class outside `edu.cit.lobitana.inventory` — including everything in `edu.cit.lobitana.shop` — can write `new InventoryServiceImpl(...)` or even reference the type name at all; the code simply won't compile if `OrderService` tries to import it directly. This forces every consumer to depend only on the public `InventoryService` interface, injected by Spring via constructor injection.
+### 3. Which module to extract first
 
-If `InventoryServiceImpl` were `public` instead, nothing would stop `OrderService` (or any other class) from bypassing the interface and instantiating or depending on the implementation directly — for example, calling implementation-specific methods that aren't part of the `InventoryService` contract, or new-ing up a second, unmanaged instance of it that isn't wired into Spring's application context and doesn't share the same repository/transaction. That would silently break the module boundary: the "Inventory module" would no longer be swappable, its internal repository access could leak into `shop`, and later extracting Inventory into a separate microservice would require hunting down every place that touched the concrete class instead of just replacing one Spring bean behind an unchanged interface.
-
-### 3. When to extract Inventory into its own microservice
-
-Extraction would make sense once Inventory's scale, change frequency, or team ownership genuinely diverges from Order's — for example, if Inventory needs to be updated by other systems (a warehouse scanner, a supplier integration) far more often than Order changes, if Inventory needs to scale independently under much higher read traffic than Order does, or if a separate team owns and deploys Inventory on its own release schedule and coupling deployments together is slowing both teams down.
-
-To actually do it, `InventoryService` would need to be reimplemented as an HTTP (or gRPC) client instead of a local class — something like `InventoryServiceHttpClient implements InventoryService`, making calls to a new standalone Inventory service and translating its JSON responses back into the same `Inventory` object shape. Because `OrderService` only depends on the `InventoryService` interface already, this swap wouldn't require any changes to `OrderService` or `OrderController` at all — that's exactly the payoff of having defined the module boundary through an interface from the start. We would additionally need to: split the database (Inventory gets its own schema/database rather than sharing tables with Order), add resilience patterns (timeouts, retries, circuit breakers) around the new network calls, decide how to handle the loss of a single shared transaction (likely an eventual-consistency approach, e.g. reserving stock, then confirming or releasing it based on whether the order save ultimately succeeds), and stand up separate deployment, monitoring, and versioning for the now-independent Inventory service.
+Among the modules, I would choose Notification as the first module to extract into a separate microservice. It has fewer dependencies, owns its own data, and does not directly affect order processing when unavailable. Moving it into a separate Spring Boot application would allow it to operate independently while communicating through a message broker. To do this, I would move the notification package and its table into a new Spring Boot project and share the event classes as a small library. In the monolith, ApplicationEventPublisher would be replaced with code that sends events to the broker, and in the new service, @EventListener would become a broker listener such as @RabbitListener or @KafkaListener. The frontend would then call the new service for GET /api/notifications. Meanwhile, keeping Order and Inventory together would avoid introducing distributed transaction challenges too early.
