@@ -118,7 +118,7 @@ Item outcomes are `RESERVED`, `INSUFFICIENT_STOCK`, or `NOT_RESERVED` (the item 
 
 None of the listeners are `@Async`. They run synchronously on the request thread, inside the order's transaction. This has two benefits for this lab: a notification is only saved if the order commits, and the activity feed is already up to date when the frontend refreshes right after the request. With `@Async`, the listener would run on another thread outside the transaction, so it could log an order that later rolled back, and a failure while saving the notification would go unnoticed. If asynchronous processing were needed later, I would combine `@Async` with `@TransactionalEventListener(phase = AFTER_COMMIT)` so notifications are only sent for committed orders.
 
-## Network Tab Evidence
+## Lab 2 Network Tab Evidence
 
 ### 1. Multi-item order — all items succeed (CONFIRMED)
 
@@ -142,16 +142,58 @@ Cancelling the confirmed order returns both items to stock: Wireless Mouse back 
 
 ![Notification feed](./screenshots/lab2-notifications.png)
 
-## Reflection
+## Lab 1 Network Tab Evidence
 
-### 1. Keeping multi-item orders atomic
+These screenshots were captured with the Lab 1 version of the API, where `POST /api/orders` took a single `{ "productId", "quantity" }`.
+
+**Confirmed order (P100, quantity 1):**
+
+![Lab 1 confirmed order](./screenshots/confirmed-order.png)
+
+**Rejected order — insufficient stock (P300, quantity 1):**
+
+![Lab 1 rejected order](./screenshots/rejected-order.png)
+
+**Supabase orders (Lab 1):**
+
+![Lab 1 Supabase orders](./screenshots/supabase.png)
+
+## Reflections
+
+### Lab 2 Reflection
+
+#### 1. Keeping multi-item orders atomic
 
 Working on this project helped me understand the importance of transaction management in maintaining data consistency. Since Order and Inventory run within the same application and database, using a single @Transactional method allows all stock reservations to succeed or fail together. Validating every item before making reservations also helps prevent unnecessary database changes. However, if Inventory becomes a separate microservice, a shared database transaction would no longer be possible. I would need to implement a saga with compensating actions, such as restocking items when a reservation fails. Idempotency keys, timeouts, and an outbox pattern would also be necessary to handle retries and prevent inconsistent inventory.
 
-### 2. Events instead of calling Notification directly
+#### 2. Events instead of calling Notification directly
 
 Another lesson I learned is the value of event-driven communication. Instead of directly calling Notification, OrderService can publish events without knowing which modules will consume them. This reduces coupling and makes the system easier to extend. However, I realized that in-process events are still synchronous and can participate in the same transaction. If Notification becomes a separate service, I would need a message broker such as RabbitMQ or Kafka, along with a transactional outbox to ensure that events are published reliably. Consumers must also handle duplicate messages safely.
 
-### 3. Which module to extract first
+#### 3. Which module to extract first
 
 Among the modules, I would choose Notification as the first module to extract into a separate microservice. It has fewer dependencies, owns its own data, and does not directly affect order processing when unavailable. Moving it into a separate Spring Boot application would allow it to operate independently while communicating through a message broker. To do this, I would move the notification package and its table into a new Spring Boot project and share the event classes as a small library. In the monolith, ApplicationEventPublisher would be replaced with code that sends events to the broker, and in the new service, @EventListener would become a broker listener such as @RabbitListener or @KafkaListener. The frontend would then call the new service for GET /api/notifications. Meanwhile, keeping Order and Inventory together would avoid introducing distributed transaction challenges too early.
+
+#### Conclusion
+
+Overall, this project taught me that microservices are not automatically better than a monolithic architecture. The decision to separate modules should depend on their independence, business requirements, and operational complexity. A well-structured modular monolith provides a strong foundation for future development because modules can be extracted gradually when there is a clear need. This approach allows developers to maintain reliability and simplicity while preparing the system for future scalability.
+
+### Lab 1 Reflection
+
+#### 1. In-process vs. separate microservices over a network
+
+Integrating Order and Inventory in-process, as two packages inside one Spring Boot application, means calling `InventoryService.reserve(...)` is just a regular Java method call — synchronous, sharing the same JVM memory space, and wrapped in the same database transaction as the rest of the order-placement logic. We get several things "for free" this way: atomicity (if reserving stock succeeds but saving the order somehow failed, both could be rolled back together in a single transaction, since they share one connection to one database), zero network latency, no serialization/deserialization overhead, and no need to handle partial failures like timeouts, retries, or an inventory service being temporarily unreachable. Deployment is also simpler — one JAR, one process, one set of logs to check.
+
+If Inventory were split into its own microservice reachable over HTTP, we would lose all of that for free and have to explicitly add it back: a network client (REST or gRPC) inside `shop` to call Inventory, timeout and retry policies for when the network is slow or the service is down, a strategy for partial failure (e.g., what happens if the reservation succeeds on Inventory's side but the network call to confirm that back to Order fails?), authentication/authorization between the two services, and likely some form of distributed transaction management or an eventual-consistency pattern (like the Saga pattern) since a single ACID transaction can no longer span two separate databases. We'd also need service discovery, independent versioning of each service's API contract, and separate monitoring/logging per service.
+
+#### 2. Why package-private `InventoryServiceImpl` matters
+
+Making `InventoryServiceImpl` package-private (no `public` modifier) is what actually enforces the module boundary at compile time, not just by convention or documentation. Because it's package-private, no class outside `edu.cit.lobitana.inventory` — including everything in `edu.cit.lobitana.shop` — can write `new InventoryServiceImpl(...)` or even reference the type name at all; the code simply won't compile if `OrderService` tries to import it directly. This forces every consumer to depend only on the public `InventoryService` interface, injected by Spring via constructor injection.
+
+If `InventoryServiceImpl` were `public` instead, nothing would stop `OrderService` (or any other class) from bypassing the interface and instantiating or depending on the implementation directly — for example, calling implementation-specific methods that aren't part of the `InventoryService` contract, or new-ing up a second, unmanaged instance of it that isn't wired into Spring's application context and doesn't share the same repository/transaction. That would silently break the module boundary: the "Inventory module" would no longer be swappable, its internal repository access could leak into `shop`, and later extracting Inventory into a separate microservice would require hunting down every place that touched the concrete class instead of just replacing one Spring bean behind an unchanged interface.
+
+#### 3. When to extract Inventory into its own microservice
+
+Extraction would make sense once Inventory's scale, change frequency, or team ownership genuinely diverges from Order's — for example, if Inventory needs to be updated by other systems (a warehouse scanner, a supplier integration) far more often than Order changes, if Inventory needs to scale independently under much higher read traffic than Order does, or if a separate team owns and deploys Inventory on its own release schedule and coupling deployments together is slowing both teams down.
+
+To actually do it, `InventoryService` would need to be reimplemented as an HTTP (or gRPC) client instead of a local class — something like `InventoryServiceHttpClient implements InventoryService`, making calls to a new standalone Inventory service and translating its JSON responses back into the same `Inventory` object shape. Because `OrderService` only depends on the `InventoryService` interface already, this swap wouldn't require any changes to `OrderService` or `OrderController` at all — that's exactly the payoff of having defined the module boundary through an interface from the start. We would additionally need to: split the database (Inventory gets its own schema/database rather than sharing tables with Order), add resilience patterns (timeouts, retries, circuit breakers) around the new network calls, decide how to handle the loss of a single shared transaction (likely an eventual-consistency approach, e.g. reserving stock, then confirming or releasing it based on whether the order save ultimately succeeds), and stand up separate deployment, monitoring, and versioning for the now-independent Inventory service.
