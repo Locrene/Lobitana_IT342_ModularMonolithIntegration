@@ -1,8 +1,9 @@
--- Lab 2 schema: recreates the full current schema from scratch, including seed data.
-DROP TABLE IF EXISTS notifications CASCADE;
-DROP TABLE IF EXISTS order_items   CASCADE;
-DROP TABLE IF EXISTS orders        CASCADE;
-DROP TABLE IF EXISTS inventory     CASCADE;
+-- Lab 3 schema: recreates the full current schema from scratch, including seed data.
+DROP TABLE IF EXISTS supplier_orders CASCADE;
+DROP TABLE IF EXISTS notifications   CASCADE;
+DROP TABLE IF EXISTS order_items     CASCADE;
+DROP TABLE IF EXISTS orders          CASCADE;
+DROP TABLE IF EXISTS inventory       CASCADE;
 
 -- Inventory table
 CREATE TABLE inventory (
@@ -30,10 +31,33 @@ CREATE TABLE order_items (
 -- Notification log (written by the Notification module)
 CREATE TABLE notifications (
     notification_id BIGSERIAL PRIMARY KEY,
-    type            TEXT NOT NULL CHECK (type IN ('ORDER_CONFIRMED', 'ORDER_REJECTED', 'LOW_STOCK')),
+    type            TEXT NOT NULL CHECK (type IN
+                        ('ORDER_CONFIRMED', 'ORDER_REJECTED', 'LOW_STOCK', 'SUPPLIER_DELIVERED')),
     message         TEXT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Purchase orders placed with LegacySupply (written by the Supplier module only).
+CREATE TABLE supplier_orders (
+    id         BIGSERIAL PRIMARY KEY,
+    product_id TEXT    NOT NULL REFERENCES inventory(product_id),
+    -- buyer_ref is "RO-" + id, so it is filled in immediately after the insert.
+    buyer_ref  TEXT    UNIQUE,
+    request_id TEXT    UNIQUE,
+    po_number  TEXT,
+    cases      INTEGER NOT NULL CHECK (cases > 0),
+    units      INTEGER NOT NULL CHECK (units > 0),
+    status     TEXT    NOT NULL CHECK (status IN
+                   ('PENDING', 'SUBMITTED', 'CONFIRMED', 'PICKING', 'SHIPPED',
+                    'DELIVERED', 'FAILED', 'UNKNOWN')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_supplier_orders_status ON supplier_orders (status);
+
+CREATE UNIQUE INDEX uq_supplier_orders_po_number
+    ON supplier_orders (po_number) WHERE po_number IS NOT NULL;
 
 -- Seed data
 INSERT INTO inventory (product_id, name, stock) VALUES

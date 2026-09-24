@@ -3,5 +3,9 @@ backend/.idea/
 backend/*.iml
 backend/.mvn/wrapper/maven-wrapper.jar
 
+# Secrets: the LegacySupply API key lives here and must never be committed.
+.env
+
 frontend/node_modules/
-frontend/dist/
+frontend/dist/READMEold.md
+image.png
