@@ -22,7 +22,7 @@ class LegacySupplyProperties {
     private String sessionPath = "/auth/token";
     private String ordersPath = "/purchase-orders";
     /** {ref} is replaced with the BuyerRef; used to check whether an order already landed. */
-    private String orderByRefPath = "/purchase-orders/by-ref/{ref}";
+    private String orderByRefPath = "/purchase-orders?buyerRef={ref}";
     /** {po} is replaced with the PO number. */
     private String orderStatusPath = "/purchase-orders/{po}";
 

@@ -56,9 +56,13 @@ class LegacySupplyClient {
      * landed but whose reply we never saw is adopted instead of placed twice.
      */
     Optional<PurchaseOrderAck> findByBuyerRef(String buyerRef) {
-        String url = properties.url(properties.getOrderByRefPath()).replace("{ref}", encode(buyerRef));
+        String url = properties.url(properties.getOrderByRefPath())
+                .replace("{ref}", UriUtils.encodeQueryParam(buyerRef, StandardCharsets.UTF_8));
         return exchange(HttpMethod.GET, url, null, readId(), true)
-                .map(body -> toAck(xmlCodec.unmarshal(body, XmlPurchaseOrderResponse.class)));
+                .map(body -> toAck(xmlCodec.unmarshal(body, XmlPurchaseOrderResponse.class)))
+                // An empty or PO-less document means "no such order", not "found one".
+                // Adopting a blank ack would mark the order sent without a PO number.
+                .filter(ack -> ack.poNumber() != null && !ack.poNumber().isBlank());
     }
 
     Optional<PurchaseOrderAck> fetchStatus(String poNumber) {
@@ -77,7 +81,7 @@ class LegacySupplyClient {
     }
 
     private PurchaseOrderAck toAck(XmlPurchaseOrderResponse xml) {
-        return new PurchaseOrderAck(xml.getPoNumber(), xml.getBuyerRef(), xml.getStatus());
+        return new PurchaseOrderAck(xml.getPoNumber(), xml.getBuyerRef(), xml.getStatusCode());
     }
 
     /**

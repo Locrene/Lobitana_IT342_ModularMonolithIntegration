@@ -7,10 +7,10 @@ import jakarta.xml.bind.annotation.XmlRootElement;
 
 /**
  * Used for both the create-order reply and the status lookup: XmlCodec unmarshals against
- * the declared type, so the two endpoints may use different root element names.
+ * the declared type, so the tracking response adding CheckedAt does not need a second class.
+ * Element names confirmed against the interface manual.
  */
-// FILL IN: field names from the interface manual.
-@XmlRootElement(name = "PurchaseOrder")
+@XmlRootElement(name = "PurchaseOrderAck")
 @XmlAccessorType(XmlAccessType.FIELD)
 class XmlPurchaseOrderResponse {
 
@@ -20,13 +20,13 @@ class XmlPurchaseOrderResponse {
     @XmlElement(name = "BuyerRef")
     private String buyerRef;
 
-    /** LegacySupply's own status code. Never leaves this module untranslated. */
-    @XmlElement(name = "Status")
-    private String status;
+    /** LegacySupply's own numeric code (10/20/30/40). Never leaves this module untranslated. */
+    @XmlElement(name = "StatusCode")
+    private String statusCode;
 
     String getPoNumber() { return poNumber; }
 
     String getBuyerRef() { return buyerRef; }
 
-    String getStatus() { return status; }
+    String getStatusCode() { return statusCode; }
 }
